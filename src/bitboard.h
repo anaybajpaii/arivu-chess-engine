@@ -12,6 +12,8 @@ inline int popcount(Bitboard b) { return std::popcount(b); }
 
 inline Square lsb(Bitboard b) { return std::countr_zero(b); }
 
+inline Square msb(Bitboard b) { return 63 - std::countl_zero(b); }
+
 inline Square pop_lsb(Bitboard& b) {
     Square s = lsb(b);
     b &= b - 1;
