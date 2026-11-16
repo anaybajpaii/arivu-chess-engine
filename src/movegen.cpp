@@ -132,3 +132,14 @@ void generate_pseudo_legal(const Board& b, MoveList& list) {
     for (PieceType pt : {KNIGHT, BISHOP, ROOK, QUEEN, KING}) add_piece_moves(b, list, us, pt);
     add_castling(b, list, us);
 }
+
+void generate_legal(Board& b, MoveList& list) {
+    MoveList pseudo;
+    generate_pseudo_legal(b, pseudo);
+    Color us = b.side_to_move;
+    for (const Move& m : pseudo) {
+        Undo u = b.make_move(m);
+        if (!in_check(b, us)) list.add(m);
+        b.unmake_move(m, u);
+    }
+}

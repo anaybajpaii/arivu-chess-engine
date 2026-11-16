@@ -1,5 +1,6 @@
 #include "board.h"
 
+#include <array>
 #include <cstddef>
 #include <iostream>
 #include <sstream>
@@ -8,8 +9,24 @@
 #include "bitboard.h"
 
 namespace {
+
 const std::string PIECE_CHARS = "PNBRQKpnbrqk";
-}
+
+Color opposite(Color c) { return c == WHITE ? BLACK : WHITE; }
+
+const std::array<int, 64> CASTLE_MASK = [] {
+    std::array<int, 64> mask;
+    mask.fill(WHITE_OO | WHITE_OOO | BLACK_OO | BLACK_OOO);
+    mask[0] &= ~WHITE_OOO;
+    mask[4] &= ~(WHITE_OO | WHITE_OOO);
+    mask[7] &= ~WHITE_OO;
+    mask[56] &= ~BLACK_OOO;
+    mask[60] &= ~(BLACK_OO | BLACK_OOO);
+    mask[63] &= ~BLACK_OO;
+    return mask;
+}();
+
+}  // namespace
 
 Board::Board() { clear(); }
 
@@ -31,6 +48,94 @@ void Board::put_piece(Piece p, Square s) {
     occupancy[color_of(p)] |= bit;
     occupied |= bit;
     mailbox[s] = p;
+}
+
+void Board::remove_piece(Square s) {
+    Piece p = mailbox[s];
+    Bitboard bit = square_bb(s);
+    pieces[p] &= ~bit;
+    occupancy[color_of(p)] &= ~bit;
+    occupied &= ~bit;
+    mailbox[s] = NO_PIECE;
+}
+
+void Board::move_piece(Square from, Square to) {
+    Piece p = mailbox[from];
+    remove_piece(from);
+    put_piece(p, to);
+}
+
+Undo Board::make_move(Move m) {
+    Undo u;
+    u.castling_rights = castling_rights;
+    u.ep_square = ep_square;
+    u.halfmove_clock = halfmove_clock;
+
+    Color us = side_to_move;
+    Square from = m.from();
+    Square to = m.to();
+    int flags = m.flags();
+    bool pawn_move = type_of(mailbox[from]) == PAWN;
+
+    if (flags == EP_CAPTURE) {
+        Square victim = (us == WHITE) ? to - 8 : to + 8;
+        u.captured = mailbox[victim];
+        remove_piece(victim);
+    } else if (m.is_capture()) {
+        u.captured = mailbox[to];
+        remove_piece(to);
+    }
+
+    move_piece(from, to);
+
+    if (m.is_promotion()) {
+        remove_piece(to);
+        put_piece(make_piece(us, m.promotion_type()), to);
+    } else if (flags == KING_CASTLE) {
+        move_piece(to + 1, to - 1);
+    } else if (flags == QUEEN_CASTLE) {
+        move_piece(to - 2, to + 1);
+    }
+
+    castling_rights &= CASTLE_MASK[from] & CASTLE_MASK[to];
+    ep_square = (flags == DOUBLE_PUSH) ? (from + to) / 2 : NO_SQUARE;
+    halfmove_clock = (pawn_move || u.captured != NO_PIECE) ? 0 : halfmove_clock + 1;
+    if (us == BLACK) ++fullmove_number;
+    side_to_move = opposite(us);
+    return u;
+}
+
+void Board::unmake_move(Move m, const Undo& u) {
+    Color us = opposite(side_to_move);
+    side_to_move = us;
+    if (us == BLACK) --fullmove_number;
+    castling_rights = u.castling_rights;
+    ep_square = u.ep_square;
+    halfmove_clock = u.halfmove_clock;
+
+    Square from = m.from();
+    Square to = m.to();
+    int flags = m.flags();
+
+    if (m.is_promotion()) {
+        remove_piece(to);
+        put_piece(make_piece(us, PAWN), from);
+    } else {
+        move_piece(to, from);
+    }
+
+    if (flags == KING_CASTLE) {
+        move_piece(to - 1, to + 1);
+    } else if (flags == QUEEN_CASTLE) {
+        move_piece(to + 1, to - 2);
+    }
+
+    if (flags == EP_CAPTURE) {
+        Square victim = (us == WHITE) ? to - 8 : to + 8;
+        put_piece(u.captured, victim);
+    } else if (m.is_capture()) {
+        put_piece(u.captured, to);
+    }
 }
 
 bool Board::set_fen(const std::string& fen) {

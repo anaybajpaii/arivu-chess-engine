@@ -33,11 +33,33 @@ MoveList moves_for(const std::string& fen) {
     return list;
 }
 
+MoveList legal_for(const std::string& fen) {
+    Board b;
+    b.set_fen(fen);
+    MoveList list;
+    generate_legal(b, list);
+    return list;
+}
+
 bool has_move(const MoveList& list, const std::string& uci, int flags) {
     for (const Move& m : list) {
         if (m.to_uci() == uci && m.flags() == flags) return true;
     }
     return false;
+}
+
+bool has_uci(const MoveList& list, const std::string& uci) {
+    for (const Move& m : list) {
+        if (m.to_uci() == uci) return true;
+    }
+    return false;
+}
+
+Move find_move(const MoveList& list, const std::string& uci) {
+    for (const Move& m : list) {
+        if (m.to_uci() == uci) return m;
+    }
+    return Move();
 }
 
 int promotion_count(const MoveList& list) {
@@ -47,6 +69,43 @@ int promotion_count(const MoveList& list) {
     }
     return n;
 }
+
+std::string fen_after(const std::string& fen, const std::string& uci) {
+    Board b;
+    b.set_fen(fen);
+    MoveList list;
+    generate_legal(b, list);
+    b.make_move(find_move(list, uci));
+    return b.to_fen();
+}
+
+bool roundtrip(const std::string& fen) {
+    Board b;
+    b.set_fen(fen);
+    Board original = b;
+    MoveList first;
+    generate_legal(b, first);
+    for (const Move& m : first) {
+        Undo u1 = b.make_move(m);
+        Board after_first = b;
+        MoveList second;
+        generate_legal(b, second);
+        for (const Move& r : second) {
+            Undo u2 = b.make_move(r);
+            b.unmake_move(r, u2);
+            if (!(b == after_first)) return false;
+        }
+        b.unmake_move(m, u1);
+        if (!(b == original)) return false;
+    }
+    return true;
+}
+
+const char* KIWIPETE = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+const char* POSITION_3 = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1";
+const char* POSITION_4 = "r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1";
+const char* POSITION_5 = "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8";
+const char* MIDDLEGAME = "r4rk1/1pp1qppp/p1np1n2/2b1pb2/4P3/2NP1N2/PPP1BPPP/R2Q1RK1 w - - 0 10";
 
 }  // namespace
 
@@ -97,7 +156,54 @@ int main() {
     MoveList ep = moves_for("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 3");
     check(has_move(ep, "d4e3", EP_CAPTURE), "en passant d4e3 is generated");
 
-    MoveList start_moves = moves_for(START_FEN);
+    check(fen_after(START_FEN, "e2e4") ==
+              "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+          "e2e4 sets the en passant square");
+    check(fen_after("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1g1") ==
+              "r3k2r/8/8/8/8/8/8/R4RK1 b kq - 1 1",
+          "short castling moves the rook and clears white rights");
+    check(fen_after("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1c1") ==
+              "r3k2r/8/8/8/8/8/8/2KR3R b kq - 1 1",
+          "long castling moves the rook and clears white rights");
+    check(fen_after("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "a1a8") ==
+              "R3k2r/8/8/8/8/8/8/4K2R b Kk - 0 1",
+          "capturing a rook clears both affected castling rights");
+    check(fen_after("8/P7/8/8/8/8/8/k6K w - - 0 1", "a7a8q") == "Q7/8/8/8/8/8/8/k6K b - - 0 1",
+          "promotion replaces the pawn with a queen");
+    check(fen_after("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 3", "d4e3") ==
+              "rnbqkbnr/ppp1pppp/8/8/8/4p3/PPPP1PPP/RNBQKBNR w KQkq - 0 4",
+          "en passant removes the captured pawn");
+
+    check(roundtrip(START_FEN), "make/unmake roundtrip from the start position");
+    check(roundtrip(KIWIPETE), "make/unmake roundtrip on Kiwipete");
+    check(roundtrip(POSITION_3), "make/unmake roundtrip on position 3");
+    check(roundtrip(POSITION_4), "make/unmake roundtrip on position 4");
+    check(roundtrip(POSITION_5), "make/unmake roundtrip on position 5");
+    check(roundtrip(MIDDLEGAME), "make/unmake roundtrip on a middlegame position");
+    check(roundtrip("8/P7/8/8/8/8/8/k6K w - - 0 1"), "make/unmake roundtrip with promotions");
+    check(roundtrip("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 3"),
+          "make/unmake roundtrip with en passant");
+
+    check(legal_for(START_FEN).count == 20, "start position has 20 legal moves");
+    check(legal_for(KIWIPETE).count == 48, "Kiwipete has 48 legal moves");
+    check(legal_for(POSITION_3).count == 14, "position 3 has 14 legal moves");
+    check(legal_for(POSITION_4).count == 6, "position 4 has 6 legal moves");
+    check(legal_for(POSITION_5).count == 44, "position 5 has 44 legal moves");
+    check(legal_for(MIDDLEGAME).count == 28, "middlegame position has 28 legal moves");
+
+    MoveList pinned = legal_for("4k3/4r3/8/8/8/8/4N3/4K3 w - - 0 1");
+    check(pinned.count == 4, "pinned knight leaves only the 4 king moves");
+    check(!has_uci(pinned, "e2c3"), "pinned knight cannot move");
+
+    MoveList evasions = legal_for("4k3/8/8/8/8/8/4r3/4K3 w - - 0 1");
+    check(evasions.count == 3, "rook check leaves 3 legal moves");
+    check(has_uci(evasions, "e1e2"), "king can capture the undefended checking rook");
+
+    std::string ep_pin = "8/8/8/8/k2pP2R/8/8/4K3 b - e3 0 1";
+    check(has_move(moves_for(ep_pin), "d4e3", EP_CAPTURE), "pinned en passant is pseudo-legal");
+    check(!has_uci(legal_for(ep_pin), "d4e3"), "en passant that exposes the king is illegal");
+
+    MoveList start_moves = legal_for(START_FEN);
     std::cout << "\nstart position moves (" << start_moves.count << "):";
     for (const Move& m : start_moves) std::cout << ' ' << m.to_uci();
     std::cout << "\n";
