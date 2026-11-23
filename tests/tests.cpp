@@ -1,4 +1,5 @@
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -15,6 +16,7 @@
 #include "move.h"
 #include "movegen.h"
 #include "perft.h"
+#include "search.h"
 #include "uci.h"
 
 namespace {
@@ -149,7 +151,7 @@ bool random_games_are_legal(int games, int max_plies) {
         for (int ply = 0; ply < max_plies; ++ply) {
             std::string command = "position startpos";
             if (!moves.empty()) command += " moves" + moves;
-            std::string output = run_uci(command + "\ngo\n");
+            std::string output = run_uci(command + "\ngo depth 2\n");
             std::string move = bestmove_of(output);
             if (contains(output, "info string") || move.empty()) return false;
             if (move == "0000") break;
@@ -222,6 +224,45 @@ bool random_positions_are_mirror_symmetric(int games, int plies) {
         }
     }
     return true;
+}
+
+int minimax(Board& b, int depth, int ply) {
+    MoveList list;
+    generate_legal(b, list);
+    if (list.count == 0) return in_check(b, b.side_to_move) ? -MATE_SCORE + ply : 0;
+    if (b.halfmove_clock >= 100) return 0;
+    if (depth <= 0) return evaluate(b);
+
+    int best = -INF_SCORE;
+    for (const Move& m : list) {
+        Undo u = b.make_move(m);
+        int score = -minimax(b, depth - 1, ply + 1);
+        b.unmake_move(m, u);
+        if (score > best) best = score;
+    }
+    return best;
+}
+
+bool search_matches_minimax(const std::string& fen, int depth) {
+    Board b;
+    b.set_fen(fen);
+    Board original = b;
+
+    SearchLimits limits;
+    limits.max_depth = depth;
+    SearchResult result = search(b, limits, nullptr);
+
+    bool unchanged = (b == original);
+    int expected = minimax(b, depth, 0);
+    return result.found && result.depth == depth && result.score == expected && unchanged;
+}
+
+std::string timed_uci(const std::string& input, long long& elapsed_ms) {
+    auto begin = std::chrono::steady_clock::now();
+    std::string output = run_uci(input);
+    auto end = std::chrono::steady_clock::now();
+    elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+    return output;
 }
 
 const char* KIWIPETE = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
@@ -380,12 +421,12 @@ int main() {
     check(!parse_position(attempt, " fen not a real fen") && attempt == untouched,
           "an invalid fen is rejected and leaves the board unchanged");
 
-    std::string first_reply = run_uci("position startpos\ngo\n");
+    std::string first_reply = run_uci("position startpos\ngo depth 2\n");
     check(has_uci(legal_for(START_FEN), bestmove_of(first_reply)),
           "go from the start position plays a legal move");
-    check(bestmove_of(run_uci("position fen rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3\ngo\n")) == "0000",
+    check(bestmove_of(run_uci("position fen rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3\ngo depth 2\n")) == "0000",
           "go in a checkmated position replies 0000");
-    check(bestmove_of(run_uci("position fen 7k/5Q2/6K1/8/8/8/8/8 b - - 0 1\ngo\n")) == "0000",
+    check(bestmove_of(run_uci("position fen 7k/5Q2/6K1/8/8/8/8/8 b - - 0 1\ngo depth 2\n")) == "0000",
           "go in a stalemated position replies 0000");
     check(random_games_are_legal(20, 150), "20 random games play only legal moves through uci");
 
@@ -412,10 +453,64 @@ int main() {
     check(eval_of("rnbqkbnr/pppppppp/8/8/8/4K3/PPPPPPPP/RNBQ1BNR w - - 0 1") < 0,
           "in the middlegame a king that walks out is penalised");
 
-    check(bestmove_of(run_uci("position fen 6k1/5ppp/8/8/8/8/8/R3K3 w - - 0 1\ngo\n")) == "a1a8",
+    check(bestmove_of(run_uci("position fen 6k1/5ppp/8/8/8/8/8/R3K3 w - - 0 1\ngo depth 2\n")) == "a1a8",
           "go plays mate in one");
-    check(bestmove_of(run_uci("position fen 4k3/8/8/3q4/8/8/8/3RK3 w - - 0 1\ngo\n")) == "d1d5",
+    check(bestmove_of(run_uci("position fen 4k3/8/8/3q4/8/8/8/3RK3 w - - 0 1\ngo depth 2\n")) == "d1d5",
           "go captures a free queen");
+
+    check(search_matches_minimax(START_FEN, 3), "alpha-beta matches plain minimax from the start");
+    check(search_matches_minimax(KIWIPETE, 3), "alpha-beta matches plain minimax on Kiwipete");
+    check(search_matches_minimax(POSITION_3, 4), "alpha-beta matches plain minimax on position 3");
+    check(search_matches_minimax(POSITION_4, 3), "alpha-beta matches plain minimax on position 4");
+    check(search_matches_minimax(POSITION_5, 3), "alpha-beta matches plain minimax on position 5");
+    check(search_matches_minimax(MIDDLEGAME, 3),
+          "alpha-beta matches plain minimax on the middlegame position");
+
+    std::string depth_run = run_uci("position startpos\ngo depth 3\n");
+    check(contains(depth_run, "info depth 3 ") && !contains(depth_run, "info depth 4 "),
+          "go depth 3 stops at depth 3");
+
+    std::string mate_one = run_uci("position fen 6k1/5ppp/8/8/8/8/8/R3K3 w - - 0 1\ngo depth 3\n");
+    check(contains(mate_one, "score mate 1") && bestmove_of(mate_one) == "a1a8",
+          "search reports mate in 1 and plays it");
+
+    std::string mate_two = run_uci("position fen 7k/8/8/8/8/8/1R6/R6K w - - 0 1\ngo depth 5\n");
+    std::string mate_two_move = bestmove_of(mate_two);
+    check(contains(mate_two, "score mate 2") &&
+              (mate_two_move == "b2b7" || mate_two_move == "a1a7" || mate_two_move == "a1g1"),
+          "search finds mate in 2");
+    check(!contains(mate_two, "info depth 4 "), "search stops once a mate is found");
+
+    std::string mated = run_uci("position fen 8/8/8/2R5/8/6K1/7R/5k2 b - - 0 1\ngo depth 3\n");
+    check(contains(mated, "score mate -1"), "search reports being mated in 1");
+
+    check(bestmove_of(run_uci("position fen 4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1\ngo depth 3\n")) !=
+              "d1d5",
+          "search does not take a defended pawn with the queen");
+
+    std::string forced = run_uci("position fen 7k/1R6/8/8/8/8/8/R6K b - - 0 1\ngo depth 5\n");
+    check(bestmove_of(forced) == "h8g8" && !contains(forced, "info depth"),
+          "a single legal move is played without searching");
+
+    Board fifty;
+    fifty.set_fen("4k3/8/8/8/8/8/8/3QK3 w - - 99 80");
+    SearchLimits fifty_limits;
+    fifty_limits.max_depth = 2;
+    check(search(fifty, fifty_limits, nullptr).score == 0, "search scores the fifty-move rule as a draw");
+
+    long long elapsed = 0;
+    std::string timed = timed_uci("position startpos\ngo movetime 200\n", elapsed);
+    check(has_uci(legal_for(START_FEN), bestmove_of(timed)) && elapsed < 1000,
+          "go movetime 200 answers in time with a legal move");
+    timed = timed_uci(std::string("position fen ") + KIWIPETE + "\ngo movetime 100\n", elapsed);
+    check(has_uci(legal_for(KIWIPETE), bestmove_of(timed)) && elapsed < 400,
+          "go movetime 100 on a complex position stops mid-iteration");
+    timed = timed_uci("position startpos\ngo wtime 1000 btime 1000\n", elapsed);
+    check(has_uci(legal_for(START_FEN), bestmove_of(timed)) && elapsed < 500,
+          "go with 1 second on the clock answers quickly");
+    timed = timed_uci("position startpos\ngo wtime 30 btime 30\n", elapsed);
+    check(has_uci(legal_for(START_FEN), bestmove_of(timed)) && elapsed < 500,
+          "go with 30 ms on the clock still answers with a legal move");
 
     std::cout << "\n" << (failures == 0 ? "all tests passed" : "some tests failed") << "\n";
     return failures;

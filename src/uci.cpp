@@ -1,55 +1,70 @@
 #include "uci.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <iostream>
-#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
 
-#include "eval.h"
 #include "movegen.h"
+#include "search.h"
 
 namespace {
 
-std::mt19937& rng() {
-    static std::mt19937 engine{std::random_device{}()};
-    return engine;
-}
+constexpr long long DEFAULT_SEARCH_MS = 5000;
 
-constexpr int MATE_SCORE = 100000;
+SearchLimits parse_go(const std::string& args, Color side) {
+    std::istringstream in(args);
+    int depth = 0;
+    int moves_to_go = 0;
+    long long movetime = 0;
+    long long wtime = -1;
+    long long btime = -1;
+    long long winc = 0;
+    long long binc = 0;
 
-std::string choose_move(Board& board) {
-    MoveList list;
-    generate_legal(board, list);
-    if (list.count == 0) return "0000";
-
-    int best_score = -MATE_SCORE - 1;
-    std::vector<Move> best_moves;
-
-    for (const Move& m : list) {
-        Undo u = board.make_move(m);
-
-        MoveList replies;
-        generate_legal(board, replies);
-        int score;
-        if (replies.count == 0) {
-            score = in_check(board, board.side_to_move) ? MATE_SCORE : 0;
-        } else {
-            score = -evaluate(board);
+    for (std::string token; in >> token;) {
+        if (token == "depth") {
+            in >> depth;
+        } else if (token == "movetime") {
+            in >> movetime;
+        } else if (token == "wtime") {
+            in >> wtime;
+        } else if (token == "btime") {
+            in >> btime;
+        } else if (token == "winc") {
+            in >> winc;
+        } else if (token == "binc") {
+            in >> binc;
+        } else if (token == "movestogo") {
+            in >> moves_to_go;
         }
-
-        board.unmake_move(m, u);
-
-        if (score > best_score) {
-            best_score = score;
-            best_moves.clear();
-        }
-        if (score == best_score) best_moves.push_back(m);
     }
 
-    std::uniform_int_distribution<int> pick(0, static_cast<int>(best_moves.size()) - 1);
-    return best_moves[pick(rng())].to_uci();
+    SearchLimits limits;
+    if (depth > 0) limits.max_depth = std::min(depth, MAX_DEPTH);
+
+    long long time_left = (side == WHITE) ? wtime : btime;
+    long long increment = (side == WHITE) ? winc : binc;
+
+    if (movetime > 0) {
+        limits.hard_ms = std::max(1LL, movetime * 9 / 10);
+        limits.soft_ms = std::max(1LL, limits.hard_ms / 2);
+    } else if (time_left >= 0) {
+        long long divisor = moves_to_go > 0 ? std::min(moves_to_go, 50) : 30;
+        long long reserve = std::min(100LL, time_left / 10);
+        long long usable = std::max(1LL, time_left - reserve);
+        long long budget = usable / divisor + increment * 3 / 4;
+        budget = std::max(1LL, std::min(budget, usable / 2));
+        limits.hard_ms = budget;
+        limits.soft_ms = std::max(1LL, budget / 2);
+    } else if (depth <= 0) {
+        limits.hard_ms = DEFAULT_SEARCH_MS;
+        limits.soft_ms = DEFAULT_SEARCH_MS / 2;
+    }
+
+    return limits;
 }
 
 }  // namespace
@@ -126,7 +141,12 @@ void uci_loop(std::istream& in, std::ostream& out) {
                 out << "info string invalid position command\n" << std::flush;
             }
         } else if (command == "go") {
-            out << "bestmove " << choose_move(board) << "\n" << std::flush;
+            std::string rest;
+            std::getline(ss, rest);
+            SearchResult result = search(board, parse_go(rest, board.side_to_move), &out);
+            out << "bestmove " << (result.found ? result.best.to_uci() : std::string("0000"))
+                << "\n"
+                << std::flush;
         } else if (command == "quit") {
             return;
         }
