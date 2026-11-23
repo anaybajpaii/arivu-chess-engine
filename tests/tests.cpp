@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 #include "attacks.h"
@@ -9,6 +10,7 @@
 #include "move.h"
 #include "movegen.h"
 #include "perft.h"
+#include "uci.h"
 
 namespace {
 
@@ -114,6 +116,42 @@ void check_perft(const std::string& name, const std::string& fen, int depth,
     std::uint64_t got = perft_of(fen, depth);
     check(got == expected, "perft " + name + " depth " + std::to_string(depth) + " = " +
                                std::to_string(expected));
+}
+
+std::string run_uci(const std::string& input) {
+    std::istringstream in(input);
+    std::ostringstream out;
+    uci_loop(in, out);
+    return out.str();
+}
+
+std::string bestmove_of(const std::string& output) {
+    std::size_t pos = output.find("bestmove ");
+    if (pos == std::string::npos) return "";
+    std::istringstream ss(output.substr(pos + 9));
+    std::string move;
+    ss >> move;
+    return move;
+}
+
+bool contains(const std::string& text, const std::string& part) {
+    return text.find(part) != std::string::npos;
+}
+
+bool random_games_are_legal(int games, int max_plies) {
+    for (int g = 0; g < games; ++g) {
+        std::string moves;
+        for (int ply = 0; ply < max_plies; ++ply) {
+            std::string command = "position startpos";
+            if (!moves.empty()) command += " moves" + moves;
+            std::string output = run_uci(command + "\ngo\n");
+            std::string move = bestmove_of(output);
+            if (contains(output, "info string") || move.empty()) return false;
+            if (move == "0000") break;
+            moves += " " + move;
+        }
+    }
+    return true;
 }
 
 const char* KIWIPETE = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
@@ -249,6 +287,37 @@ int main() {
     check_perft("middlegame", MIDDLEGAME, 2, 1335);
     check_perft("middlegame", MIDDLEGAME, 3, 38160);
     check_perft("middlegame", MIDDLEGAME, 4, 1727073);
+
+    std::string handshake = run_uci("uci\nisready\nquit\n");
+    check(contains(handshake, "id name Arivu"), "uci replies with the engine name");
+    check(contains(handshake, "uciok"), "uci replies uciok");
+    check(contains(handshake, "readyok"), "isready replies readyok");
+    check(!contains(run_uci("quit\nisready\n"), "readyok"), "nothing is processed after quit");
+
+    Board parsed;
+    check(parse_position(parsed, " startpos moves e2e4 e7e5 g1f3") &&
+              parsed.to_fen() == "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+          "position startpos with moves");
+    check(parse_position(parsed, " fen 4k3/8/8/8/8/8/4P3/4K3 w - - 0 1 moves e2e4") &&
+              parsed.to_fen() == "4k3/8/8/8/4P3/8/8/4K3 b - e3 0 1",
+          "position fen with moves");
+
+    Board untouched;
+    untouched.set_fen(START_FEN);
+    Board attempt = untouched;
+    check(!parse_position(attempt, " startpos moves e2e4 e2e5") && attempt == untouched,
+          "an illegal move is rejected and leaves the board unchanged");
+    check(!parse_position(attempt, " fen not a real fen") && attempt == untouched,
+          "an invalid fen is rejected and leaves the board unchanged");
+
+    std::string first_reply = run_uci("position startpos\ngo\n");
+    check(has_uci(legal_for(START_FEN), bestmove_of(first_reply)),
+          "go from the start position plays a legal move");
+    check(bestmove_of(run_uci("position fen rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3\ngo\n")) == "0000",
+          "go in a checkmated position replies 0000");
+    check(bestmove_of(run_uci("position fen 7k/5Q2/6K1/8/8/8/8/8 b - - 0 1\ngo\n")) == "0000",
+          "go in a stalemated position replies 0000");
+    check(random_games_are_legal(20, 150), "20 random games play only legal moves through uci");
 
     std::cout << "\n" << (failures == 0 ? "all tests passed" : "some tests failed") << "\n";
     return failures;

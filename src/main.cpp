@@ -7,11 +7,13 @@
 #include "attacks.h"
 #include "board.h"
 #include "perft.h"
+#include "uci.h"
 
 namespace {
 
 void print_usage() {
     std::cout << "usage:\n"
+              << "  arivu                    (UCI mode, for chess GUIs)\n"
               << "  arivu perft <depth> [fen]\n"
               << "  arivu divide <depth> [fen]\n";
 }
@@ -43,7 +45,12 @@ int run_perft(int depth, Board& board) {
 int main(int argc, char** argv) {
     init_attacks();
 
-    std::string command = argc > 1 ? argv[1] : "";
+    if (argc == 1) {
+        uci_loop(std::cin, std::cout);
+        return 0;
+    }
+
+    std::string command = argv[1];
 
     if (command == "perft" || command == "divide") {
         if (argc < 3) {
