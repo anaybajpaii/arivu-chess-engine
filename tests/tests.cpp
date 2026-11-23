@@ -1,12 +1,17 @@
+#include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "attacks.h"
 #include "bitboard.h"
 #include "board.h"
+#include "eval.h"
 #include "move.h"
 #include "movegen.h"
 #include "perft.h"
@@ -149,6 +154,71 @@ bool random_games_are_legal(int games, int max_plies) {
             if (contains(output, "info string") || move.empty()) return false;
             if (move == "0000") break;
             moves += " " + move;
+        }
+    }
+    return true;
+}
+
+std::string mirror_fen(const std::string& fen) {
+    std::istringstream in(fen);
+    std::string placement, side, castling, ep, rest;
+    in >> placement >> side >> castling >> ep;
+    std::getline(in, rest);
+
+    std::vector<std::string> ranks;
+    std::string current;
+    for (char c : placement) {
+        if (c == '/') {
+            ranks.push_back(current);
+            current.clear();
+        } else {
+            current += c;
+        }
+    }
+    ranks.push_back(current);
+
+    auto swap_case = [](char c) {
+        unsigned char u = static_cast<unsigned char>(c);
+        if (std::isupper(u)) return static_cast<char>(std::tolower(u));
+        if (std::islower(u)) return static_cast<char>(std::toupper(u));
+        return c;
+    };
+
+    std::string mirrored;
+    for (std::size_t i = ranks.size(); i-- > 0;) {
+        for (char c : ranks[i]) mirrored += swap_case(c);
+        if (i > 0) mirrored += '/';
+    }
+
+    side = (side == "w") ? "b" : "w";
+    for (char& c : castling) c = swap_case(c);
+    if (ep != "-") ep[1] = static_cast<char>('1' + '8' - ep[1]);
+
+    return mirrored + ' ' + side + ' ' + castling + ' ' + ep + rest;
+}
+
+int eval_of(const std::string& fen) {
+    Board b;
+    b.set_fen(fen);
+    return evaluate(b);
+}
+
+bool eval_is_mirror_symmetric(const std::string& fen) {
+    return eval_of(fen) == eval_of(mirror_fen(fen));
+}
+
+bool random_positions_are_mirror_symmetric(int games, int plies) {
+    std::mt19937 gen(12345);
+    for (int g = 0; g < games; ++g) {
+        Board b;
+        b.set_fen(START_FEN);
+        for (int ply = 0; ply < plies; ++ply) {
+            if (!eval_is_mirror_symmetric(b.to_fen())) return false;
+            MoveList list;
+            generate_legal(b, list);
+            if (list.count == 0) break;
+            std::uniform_int_distribution<int> pick(0, list.count - 1);
+            b.make_move(list.moves[pick(gen)]);
         }
     }
     return true;
@@ -318,6 +388,34 @@ int main() {
     check(bestmove_of(run_uci("position fen 7k/5Q2/6K1/8/8/8/8/8 b - - 0 1\ngo\n")) == "0000",
           "go in a stalemated position replies 0000");
     check(random_games_are_legal(20, 150), "20 random games play only legal moves through uci");
+
+    check(eval_of(START_FEN) == 0, "the start position evaluates to 0");
+    check(eval_is_mirror_symmetric(KIWIPETE), "Kiwipete evaluates the same when mirrored");
+    check(eval_is_mirror_symmetric(POSITION_3), "position 3 evaluates the same when mirrored");
+    check(eval_is_mirror_symmetric(POSITION_4), "position 4 evaluates the same when mirrored");
+    check(eval_is_mirror_symmetric(POSITION_5), "position 5 evaluates the same when mirrored");
+    check(eval_is_mirror_symmetric(MIDDLEGAME),
+          "the middlegame position evaluates the same when mirrored");
+    check(random_positions_are_mirror_symmetric(5, 100),
+          "500 random game positions evaluate the same when mirrored");
+
+    int queen_up = eval_of("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
+    check(queen_up >= 850 && queen_up <= 1000, "a queen up is worth about 900");
+    check(eval_of("4k3/8/8/8/8/8/8/3QK3 b - - 0 1") == -queen_up,
+          "the score flips sign with the side to move");
+    check(eval_of("4k3/8/8/8/3N4/8/8/4K3 w - - 0 1") > eval_of("4k3/8/8/8/8/8/8/N3K3 w - - 0 1"),
+          "a central knight beats a corner knight");
+    check(eval_of("4k3/8/4P3/8/8/8/8/4K3 w - - 0 1") > eval_of("4k3/8/8/8/8/4P3/8/4K3 w - - 0 1"),
+          "an advanced pawn beats a pawn on its third rank");
+    check(eval_of("7k/8/8/8/3K4/8/8/8 w - - 0 1") > eval_of("7k/8/8/8/8/8/8/K7 w - - 0 1"),
+          "in the endgame the king prefers the centre");
+    check(eval_of("rnbqkbnr/pppppppp/8/8/8/4K3/PPPPPPPP/RNBQ1BNR w - - 0 1") < 0,
+          "in the middlegame a king that walks out is penalised");
+
+    check(bestmove_of(run_uci("position fen 6k1/5ppp/8/8/8/8/8/R3K3 w - - 0 1\ngo\n")) == "a1a8",
+          "go plays mate in one");
+    check(bestmove_of(run_uci("position fen 4k3/8/8/3q4/8/8/8/3RK3 w - - 0 1\ngo\n")) == "d1d5",
+          "go captures a free queen");
 
     std::cout << "\n" << (failures == 0 ? "all tests passed" : "some tests failed") << "\n";
     return failures;

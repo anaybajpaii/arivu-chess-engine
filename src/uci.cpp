@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "eval.h"
 #include "movegen.h"
 
 namespace {
@@ -16,12 +17,39 @@ std::mt19937& rng() {
     return engine;
 }
 
+constexpr int MATE_SCORE = 100000;
+
 std::string choose_move(Board& board) {
     MoveList list;
     generate_legal(board, list);
     if (list.count == 0) return "0000";
-    std::uniform_int_distribution<int> pick(0, list.count - 1);
-    return list.moves[pick(rng())].to_uci();
+
+    int best_score = -MATE_SCORE - 1;
+    std::vector<Move> best_moves;
+
+    for (const Move& m : list) {
+        Undo u = board.make_move(m);
+
+        MoveList replies;
+        generate_legal(board, replies);
+        int score;
+        if (replies.count == 0) {
+            score = in_check(board, board.side_to_move) ? MATE_SCORE : 0;
+        } else {
+            score = -evaluate(board);
+        }
+
+        board.unmake_move(m, u);
+
+        if (score > best_score) {
+            best_score = score;
+            best_moves.clear();
+        }
+        if (score == best_score) best_moves.push_back(m);
+    }
+
+    std::uniform_int_distribution<int> pick(0, static_cast<int>(best_moves.size()) - 1);
+    return best_moves[pick(rng())].to_uci();
 }
 
 }  // namespace
