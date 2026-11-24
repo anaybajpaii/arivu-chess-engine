@@ -5,6 +5,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "movegen.h"
@@ -69,13 +70,14 @@ SearchLimits parse_go(const std::string& args, Color side) {
 
 }  // namespace
 
-bool parse_position(Board& board, const std::string& args) {
+bool parse_position(Board& board, const std::string& args, std::vector<std::uint64_t>& history) {
     std::istringstream in(args);
     std::vector<std::string> tokens;
     for (std::string token; in >> token;) tokens.push_back(token);
     if (tokens.empty()) return false;
 
     Board next;
+    std::vector<std::uint64_t> next_history;
     std::size_t i = 0;
 
     if (tokens[0] == "startpos") {
@@ -102,6 +104,7 @@ bool parse_position(Board& board, const std::string& args) {
             bool found = false;
             for (const Move& m : list) {
                 if (m.to_uci() == tokens[i]) {
+                    next_history.push_back(next.hash);
                     next.make_move(m);
                     found = true;
                     break;
@@ -112,12 +115,14 @@ bool parse_position(Board& board, const std::string& args) {
     }
 
     board = next;
+    history = std::move(next_history);
     return true;
 }
 
 void uci_loop(std::istream& in, std::ostream& out) {
     Board board;
     board.set_fen(START_FEN);
+    std::vector<std::uint64_t> history;
 
     std::string line;
     while (std::getline(in, line)) {
@@ -134,16 +139,17 @@ void uci_loop(std::istream& in, std::ostream& out) {
             out << "readyok\n" << std::flush;
         } else if (command == "ucinewgame") {
             board.set_fen(START_FEN);
+            history.clear();
         } else if (command == "position") {
             std::string rest;
             std::getline(ss, rest);
-            if (!parse_position(board, rest)) {
+            if (!parse_position(board, rest, history)) {
                 out << "info string invalid position command\n" << std::flush;
             }
         } else if (command == "go") {
             std::string rest;
             std::getline(ss, rest);
-            SearchResult result = search(board, parse_go(rest, board.side_to_move), &out);
+            SearchResult result = search(board, parse_go(rest, board.side_to_move), &out, history);
             out << "bestmove " << (result.found ? result.best.to_uci() : std::string("0000"))
                 << "\n"
                 << std::flush;

@@ -6,6 +6,7 @@
 #include <ostream>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "eval.h"
 #include "movegen.h"
@@ -57,10 +58,25 @@ void pick_best(MoveList& list, ScoreList& scores, int from) {
     }
 }
 
+class PathGuard {
+public:
+    PathGuard(std::vector<std::uint64_t>& path, std::uint64_t hash) : path_(path) {
+        path_.push_back(hash);
+    }
+    ~PathGuard() { path_.pop_back(); }
+    PathGuard(const PathGuard&) = delete;
+    PathGuard& operator=(const PathGuard&) = delete;
+
+private:
+    std::vector<std::uint64_t>& path_;
+};
+
 class Searcher {
 public:
-    Searcher(Board& board, const SearchLimits& limits)
-        : board_(board), limits_(limits), start_(Clock::now()) {}
+    Searcher(Board& board, const SearchLimits& limits, const std::vector<std::uint64_t>& history)
+        : board_(board), limits_(limits), start_(Clock::now()), path_(history) {
+        path_.reserve(history.size() + MAX_PLY + 2);
+    }
 
     SearchResult run(std::ostream* info);
 
@@ -75,12 +91,14 @@ private:
         if (can_stop_ && limits_.hard_ms > 0 && elapsed_ms() >= limits_.hard_ms) stopped_ = true;
     }
 
+    bool is_repetition() const;
     int negamax(int depth, int alpha, int beta, int ply);
     int quiescence(int alpha, int beta, int ply);
 
     Board& board_;
     SearchLimits limits_;
     Clock::time_point start_;
+    std::vector<std::uint64_t> path_;
     std::uint64_t nodes_ = 0;
     bool stopped_ = false;
     bool can_stop_ = false;
@@ -139,7 +157,17 @@ int Searcher::quiescence(int alpha, int beta, int ply) {
     return best;
 }
 
+bool Searcher::is_repetition() const {
+    std::size_t reach = std::min<std::size_t>(static_cast<std::size_t>(board_.halfmove_clock),
+                                              path_.size());
+    for (std::size_t back = 2; back <= reach; back += 2) {
+        if (path_[path_.size() - back] == board_.hash) return true;
+    }
+    return false;
+}
+
 int Searcher::negamax(int depth, int alpha, int beta, int ply) {
+    if (ply > 0 && is_repetition()) return 0;
     if (depth <= 0) return quiescence(alpha, beta, ply);
 
     ++nodes_;
@@ -153,6 +181,8 @@ int Searcher::negamax(int depth, int alpha, int beta, int ply) {
 
     ScoreList scores;
     score_moves(board_, list, scores);
+
+    PathGuard guard(path_, board_.hash);
 
     int best = -INF_SCORE;
     for (int i = 0; i < list.count; ++i) {
@@ -187,6 +217,7 @@ SearchResult Searcher::run(std::ostream* info) {
     if (root.count == 1) return result;
 
     ScoreList root_scores;
+    PathGuard root_guard(path_, board_.hash);
 
     for (int depth = 1; depth <= limits_.max_depth; ++depth) {
         score_moves(board_, root, root_scores);
@@ -238,7 +269,8 @@ SearchResult Searcher::run(std::ostream* info) {
 
 }  // namespace
 
-SearchResult search(Board& board, const SearchLimits& limits, std::ostream* info) {
-    Searcher searcher(board, limits);
+SearchResult search(Board& board, const SearchLimits& limits, std::ostream* info,
+                    const std::vector<std::uint64_t>& history) {
+    Searcher searcher(board, limits, history);
     return searcher.run(info);
 }

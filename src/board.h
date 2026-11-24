@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <string>
 
 #include "move.h"
@@ -14,6 +15,7 @@ struct Undo {
     int castling_rights = 0;
     Square ep_square = NO_SQUARE;
     int halfmove_clock = 0;
+    std::uint64_t hash = 0;
 };
 
 struct Board {
@@ -27,6 +29,7 @@ struct Board {
     Square ep_square = NO_SQUARE;
     int halfmove_clock = 0;
     int fullmove_number = 1;
+    std::uint64_t hash = 0;
 
     Board();
 
@@ -36,6 +39,7 @@ struct Board {
     void move_piece(Square from, Square to);
     bool set_fen(const std::string& fen);
     std::string to_fen() const;
+    std::uint64_t compute_hash() const;
     void print() const;
 
     Undo make_move(Move m);

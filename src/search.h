@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <iosfwd>
+#include <vector>
 
 #include "board.h"
 #include "move.h"
@@ -24,4 +25,5 @@ struct SearchResult {
     std::uint64_t nodes = 0;
 };
 
-SearchResult search(Board& board, const SearchLimits& limits, std::ostream* info);
+SearchResult search(Board& board, const SearchLimits& limits, std::ostream* info,
+                    const std::vector<std::uint64_t>& history = {});

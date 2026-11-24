@@ -7,6 +7,7 @@
 #include <string>
 
 #include "bitboard.h"
+#include "zobrist.h"
 
 namespace {
 
@@ -40,6 +41,7 @@ void Board::clear() {
     ep_square = NO_SQUARE;
     halfmove_clock = 0;
     fullmove_number = 1;
+    hash = 0;
 }
 
 void Board::put_piece(Piece p, Square s) {
@@ -48,6 +50,7 @@ void Board::put_piece(Piece p, Square s) {
     occupancy[color_of(p)] |= bit;
     occupied |= bit;
     mailbox[s] = p;
+    hash ^= zobrist::KEYS.piece[p][s];
 }
 
 void Board::remove_piece(Square s) {
@@ -57,6 +60,7 @@ void Board::remove_piece(Square s) {
     occupancy[color_of(p)] &= ~bit;
     occupied &= ~bit;
     mailbox[s] = NO_PIECE;
+    hash ^= zobrist::KEYS.piece[p][s];
 }
 
 void Board::move_piece(Square from, Square to) {
@@ -70,6 +74,7 @@ Undo Board::make_move(Move m) {
     u.castling_rights = castling_rights;
     u.ep_square = ep_square;
     u.halfmove_clock = halfmove_clock;
+    u.hash = hash;
 
     Color us = side_to_move;
     Square from = m.from();
@@ -97,8 +102,15 @@ Undo Board::make_move(Move m) {
         move_piece(to - 2, to + 1);
     }
 
+    hash ^= zobrist::KEYS.castling[castling_rights];
     castling_rights &= CASTLE_MASK[from] & CASTLE_MASK[to];
+    hash ^= zobrist::KEYS.castling[castling_rights];
+
+    if (ep_square != NO_SQUARE) hash ^= zobrist::KEYS.ep_file[file_of(ep_square)];
     ep_square = (flags == DOUBLE_PUSH) ? (from + to) / 2 : NO_SQUARE;
+    if (ep_square != NO_SQUARE) hash ^= zobrist::KEYS.ep_file[file_of(ep_square)];
+
+    hash ^= zobrist::KEYS.side;
     halfmove_clock = (pawn_move || u.captured != NO_PIECE) ? 0 : halfmove_clock + 1;
     if (us == BLACK) ++fullmove_number;
     side_to_move = opposite(us);
@@ -136,6 +148,8 @@ void Board::unmake_move(Move m, const Undo& u) {
     } else if (m.is_capture()) {
         put_piece(u.captured, to);
     }
+
+    hash = u.hash;
 }
 
 bool Board::set_fen(const std::string& fen) {
@@ -144,7 +158,19 @@ bool Board::set_fen(const std::string& fen) {
         clear();
         return false;
     }
+    hash = compute_hash();
     return true;
+}
+
+std::uint64_t Board::compute_hash() const {
+    std::uint64_t h = 0;
+    for (Square s = 0; s < 64; ++s) {
+        if (mailbox[s] != NO_PIECE) h ^= zobrist::KEYS.piece[mailbox[s]][s];
+    }
+    h ^= zobrist::KEYS.castling[castling_rights];
+    if (ep_square != NO_SQUARE) h ^= zobrist::KEYS.ep_file[file_of(ep_square)];
+    if (side_to_move == BLACK) h ^= zobrist::KEYS.side;
+    return h;
 }
 
 bool Board::parse_fen(const std::string& fen) {

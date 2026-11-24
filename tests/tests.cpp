@@ -5,6 +5,7 @@
 #include <initializer_list>
 #include <iostream>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -18,6 +19,7 @@
 #include "perft.h"
 #include "search.h"
 #include "uci.h"
+#include "zobrist.h"
 
 namespace {
 
@@ -298,6 +300,84 @@ std::string timed_uci(const std::string& input, long long& elapsed_ms) {
     return output;
 }
 
+bool hash_is_consistent(Board& b, int depth) {
+    if (b.hash != b.compute_hash()) return false;
+    if (depth == 0) return true;
+    MoveList list;
+    generate_legal(b, list);
+    for (const Move& m : list) {
+        Board before = b;
+        Undo u = b.make_move(m);
+        bool ok = hash_is_consistent(b, depth - 1);
+        b.unmake_move(m, u);
+        if (!ok || !(b == before)) return false;
+    }
+    return true;
+}
+
+bool random_games_keep_hash_in_sync(int games, int max_plies) {
+    std::mt19937 rng(12345);
+    for (int g = 0; g < games; ++g) {
+        Board b;
+        b.set_fen(START_FEN);
+        for (int ply = 0; ply < max_plies; ++ply) {
+            if (b.hash != b.compute_hash()) return false;
+            Board reloaded;
+            reloaded.set_fen(b.to_fen());
+            if (reloaded.hash != b.hash) return false;
+            MoveList list;
+            generate_legal(b, list);
+            if (list.count == 0) break;
+            b.make_move(list.moves[rng() % static_cast<unsigned>(list.count)]);
+        }
+    }
+    return true;
+}
+
+std::uint64_t hash_after(const std::string& position_args) {
+    Board b;
+    std::vector<std::uint64_t> history;
+    if (!parse_position(b, position_args, history)) return 0;
+    return b.hash;
+}
+
+bool all_keys_are_distinct_and_nonzero() {
+    std::set<std::uint64_t> seen;
+    std::size_t expected = 0;
+    for (const auto& per_piece : zobrist::KEYS.piece) {
+        for (std::uint64_t key : per_piece) {
+            seen.insert(key);
+            ++expected;
+        }
+    }
+    for (std::uint64_t key : zobrist::KEYS.castling) {
+        seen.insert(key);
+        ++expected;
+    }
+    for (std::uint64_t key : zobrist::KEYS.ep_file) {
+        seen.insert(key);
+        ++expected;
+    }
+    seen.insert(zobrist::KEYS.side);
+    ++expected;
+    return seen.size() == expected && seen.count(0) == 0;
+}
+
+std::vector<std::uint64_t> history_that_repeats_every_reply(const std::string& fen) {
+    Board b;
+    b.set_fen(fen);
+    MoveList list;
+    generate_legal(b, list);
+    std::vector<std::uint64_t> history;
+    for (const Move& m : list) {
+        Undo u = b.make_move(m);
+        history.push_back(0x0123456789ABCDEFULL);
+        history.push_back(b.hash);
+        b.unmake_move(m, u);
+    }
+    return history;
+}
+
 const char* KIWIPETE = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
 const char* POSITION_3 = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1";
 const char* POSITION_4 = "r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1";
@@ -439,19 +519,20 @@ int main() {
     check(!contains(run_uci("quit\nisready\n"), "readyok"), "nothing is processed after quit");
 
     Board parsed;
-    check(parse_position(parsed, " startpos moves e2e4 e7e5 g1f3") &&
+    std::vector<std::uint64_t> parsed_history;
+    check(parse_position(parsed, " startpos moves e2e4 e7e5 g1f3", parsed_history) &&
               parsed.to_fen() == "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
           "position startpos with moves");
-    check(parse_position(parsed, " fen 4k3/8/8/8/8/8/4P3/4K3 w - - 0 1 moves e2e4") &&
+    check(parse_position(parsed, " fen 4k3/8/8/8/8/8/4P3/4K3 w - - 0 1 moves e2e4", parsed_history) &&
               parsed.to_fen() == "4k3/8/8/8/4P3/8/8/4K3 b - e3 0 1",
           "position fen with moves");
 
     Board untouched;
     untouched.set_fen(START_FEN);
     Board attempt = untouched;
-    check(!parse_position(attempt, " startpos moves e2e4 e2e5") && attempt == untouched,
+    check(!parse_position(attempt, " startpos moves e2e4 e2e5", parsed_history) && attempt == untouched,
           "an illegal move is rejected and leaves the board unchanged");
-    check(!parse_position(attempt, " fen not a real fen") && attempt == untouched,
+    check(!parse_position(attempt, " fen not a real fen", parsed_history) && attempt == untouched,
           "an invalid fen is rejected and leaves the board unchanged");
 
     std::string first_reply = run_uci("position startpos\ngo depth 2\n");
@@ -545,6 +626,111 @@ int main() {
     SearchLimits fifty_limits;
     fifty_limits.max_depth = 2;
     check(search(fifty, fifty_limits, nullptr).score == 0, "search scores the fifty-move rule as a draw");
+
+
+    {
+        Board h;
+        h.set_fen(START_FEN);
+        check(h.hash != 0 && h.hash == h.compute_hash(), "the start position has a non-zero hash");
+        check(all_keys_are_distinct_and_nonzero(), "all zobrist keys are distinct and non-zero");
+
+        for (const char* fen : {START_FEN, KIWIPETE, POSITION_3, POSITION_4, POSITION_5, MIDDLEGAME}) {
+            Board b;
+            b.set_fen(fen);
+            check(hash_is_consistent(b, 3),
+                  std::string("incremental hash matches a full recompute to depth 3 from ") + fen);
+        }
+        check(random_games_keep_hash_in_sync(30, 200),
+              "hash stays in sync with a recompute and a fen reload in random games");
+
+        check(hash_after(" startpos moves g1f3 g8f6 b1c3 b8c6") ==
+                  hash_after(" startpos moves b1c3 b8c6 g1f3 g8f6"),
+              "transpositions reach the same hash");
+        check(hash_after(" startpos moves g1f3 g8f6 f3g1 f6g8") == hash_after(" startpos"),
+              "returning to the start position restores the hash");
+        check(hash_after(" startpos moves e2e4") != hash_after(" startpos moves d2d4"),
+              "different positions get different hashes");
+        check(hash_after(" fen 4k3/8/8/8/8/8/8/4K3 w - - 0 1") !=
+                  hash_after(" fen 4k3/8/8/8/8/8/8/4K3 b - - 0 1"),
+              "the side to move changes the hash");
+        check(hash_after(" fen r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1") !=
+                  hash_after(" fen r3k2r/8/8/8/8/8/8/R3K2R w Kkq - 0 1"),
+              "castling rights change the hash");
+        check(hash_after(" fen 4k3/8/8/8/4Pp2/8/8/4K3 b - e3 0 1") !=
+                  hash_after(" fen 4k3/8/8/8/4Pp2/8/8/4K3 b - - 0 1"),
+              "an en passant square changes the hash");
+        check(hash_after(" fen 4k3/8/8/8/8/8/8/4K3 w - - 0 1") ==
+                  hash_after(" fen 4k3/8/8/8/8/8/8/4K3 w - - 37 90"),
+              "the move counters do not change the hash");
+
+        Board capture;
+        capture.set_fen("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1");
+        Board before = capture;
+        MoveList list;
+        generate_legal(capture, list);
+        bool restored = true;
+        for (const Move& m : list) {
+            Undo u = capture.make_move(m);
+            capture.unmake_move(m, u);
+            if (capture.hash != before.hash) restored = false;
+        }
+        check(restored, "unmake restores the hash");
+
+        Board with_history;
+        std::vector<std::uint64_t> history;
+        check(parse_position(with_history, " startpos moves g1f3 g8f6 f3g1 f6g8", history) &&
+                  history.size() == 4 && history[0] == with_history.hash,
+              "position records the hash of every earlier position");
+        check(parse_position(with_history, " startpos", history) && history.empty(),
+              "position without moves has no history");
+    }
+
+    {
+        const char* winning = "4k3/8/8/8/8/8/8/3QK3 w - - 90 80";
+        Board b;
+        b.set_fen(winning);
+        SearchLimits limits;
+        limits.max_depth = 1;
+        int plain = search(b, limits, nullptr).score;
+        int repeated = search(b, limits, nullptr, history_that_repeats_every_reply(winning)).score;
+        check(plain > 500, "without history the queen is worth its value");
+        check(repeated == 0, "a move that repeats an earlier position is scored as a draw");
+    }
+
+    {
+        Board perpetual;
+        perpetual.set_fen("6k1/8/5P2/5qp1/4Qr2/8/8/6K1 w - - 0 1");
+        SearchLimits limits;
+        limits.max_depth = 6;
+        SearchResult result = search(perpetual, limits, nullptr);
+        check(result.found && result.best.to_uci() == "e4e8" && result.score >= -50 &&
+                  result.score <= 50,
+              "search finds the perpetual check instead of losing");
+    }
+
+    {
+        std::vector<std::uint64_t> shuffle_history;
+        Board shuffle;
+        check(parse_position(shuffle, " startpos moves g1f3 g8f6 f3g1", shuffle_history) &&
+                  has_uci(legal_for("rnbqkb1r/pppppppp/5n2/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 2 2"),
+                          "f6g8") &&
+                  shuffle_history.size() == 3,
+              "a shuffled opening position is parsed with its history");
+        SearchLimits limits;
+        limits.max_depth = 4;
+        SearchResult result = search(shuffle, limits, nullptr, shuffle_history);
+        check(result.found && has_uci(legal_for(shuffle.to_fen()), result.best.to_uci()),
+              "search with game history returns a legal move");
+    }
+
+    {
+        std::string base = "position fen 4k3/8/8/8/8/8/8/3QK3 w - - 0 1";
+        std::string shuffled = run_uci(base + " moves d1d2 e8e7 d2d1\ngo depth 3\n");
+        std::string fresh = run_uci("position fen 4k3/8/8/8/8/8/8/3QK3 b - - 3 1\ngo depth 3\n");
+        check(bestmove_of(shuffled) == "e7e8" && contains(shuffled, "score cp 0 "),
+              "uci passes the game history so the engine repeats the position to draw");
+        check(!contains(fresh, "score cp 0 "), "the same kind of position without history is not a draw");
+    }
 
     long long elapsed = 0;
     std::string timed = timed_uci("position startpos\ngo movetime 200\n", elapsed);
