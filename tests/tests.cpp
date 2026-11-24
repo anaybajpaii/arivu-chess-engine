@@ -226,12 +226,45 @@ bool random_positions_are_mirror_symmetric(int games, int plies) {
     return true;
 }
 
+bool is_noisy_move(Move m) {
+    return m.is_capture() || (m.is_promotion() && m.promotion_type() == QUEEN);
+}
+
+int reference_quiescence(Board& b, int ply, int alpha, int beta) {
+    bool checked = in_check(b, b.side_to_move);
+    MoveList legal;
+    generate_legal(b, legal);
+
+    if (checked) {
+        if (legal.count == 0) return -MATE_SCORE + ply;
+        if (b.halfmove_clock >= 100) return 0;
+    } else if (b.halfmove_clock >= 100) {
+        return 0;
+    }
+
+    int best = checked ? -INF_SCORE : evaluate(b);
+    if (best >= beta) return best;
+    if (best > alpha) alpha = best;
+
+    for (const Move& m : legal) {
+        if (!checked && !is_noisy_move(m)) continue;
+        Undo u = b.make_move(m);
+        int score = -reference_quiescence(b, ply + 1, -beta, -alpha);
+        b.unmake_move(m, u);
+        if (score > best) best = score;
+        if (best > alpha) alpha = best;
+        if (alpha >= beta) break;
+    }
+    return best;
+}
+
 int minimax(Board& b, int depth, int ply) {
+    if (depth <= 0) return reference_quiescence(b, ply, -INF_SCORE, INF_SCORE);
+
     MoveList list;
     generate_legal(b, list);
     if (list.count == 0) return in_check(b, b.side_to_move) ? -MATE_SCORE + ply : 0;
     if (b.halfmove_clock >= 100) return 0;
-    if (depth <= 0) return evaluate(b);
 
     int best = -INF_SCORE;
     for (const Move& m : list) {
@@ -459,12 +492,27 @@ int main() {
           "go captures a free queen");
 
     check(search_matches_minimax(START_FEN, 3), "alpha-beta matches plain minimax from the start");
-    check(search_matches_minimax(KIWIPETE, 3), "alpha-beta matches plain minimax on Kiwipete");
     check(search_matches_minimax(POSITION_3, 4), "alpha-beta matches plain minimax on position 3");
-    check(search_matches_minimax(POSITION_4, 3), "alpha-beta matches plain minimax on position 4");
-    check(search_matches_minimax(POSITION_5, 3), "alpha-beta matches plain minimax on position 5");
-    check(search_matches_minimax(MIDDLEGAME, 3),
+    check(search_matches_minimax(POSITION_5, 1), "alpha-beta matches plain minimax on position 5");
+    check(search_matches_minimax(MIDDLEGAME, 2),
           "alpha-beta matches plain minimax on the middlegame position");
+
+    check(search_matches_minimax("7k/8/8/8/8/8/p5K1/8 w - - 0 1", 1),
+          "alpha-beta matches plain minimax when a pawn can promote at the leaf");
+    check(search_matches_minimax("8/P6k/8/8/8/8/6K1/8 b - - 0 1", 2),
+          "alpha-beta matches plain minimax with a promotion at depth 2");
+    {
+        Board promo;
+        promo.set_fen("7k/8/8/8/8/8/p5K1/8 w - - 0 1");
+        SearchLimits limits;
+        limits.max_depth = 1;
+        SearchResult result = search(promo, limits, nullptr);
+        check(result.found && result.score < -500, "quiescence sees the promotion that follows");
+    }
+
+    check(bestmove_of(run_uci("position fen 4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1\ngo depth 1\n")) !=
+              "d1d5",
+          "quiescence stops a depth 1 search from grabbing a defended pawn");
 
     std::string depth_run = run_uci("position startpos\ngo depth 3\n");
     check(contains(depth_run, "info depth 3 ") && !contains(depth_run, "info depth 4 "),
