@@ -25,5 +25,8 @@ struct SearchResult {
     std::uint64_t nodes = 0;
 };
 
+class TranspositionTable;
+
 SearchResult search(Board& board, const SearchLimits& limits, std::ostream* info,
-                    const std::vector<std::uint64_t>& history = {});
+                    const std::vector<std::uint64_t>& history = {},
+                    TranspositionTable* tt = nullptr);

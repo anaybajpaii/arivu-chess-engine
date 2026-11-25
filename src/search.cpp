@@ -10,6 +10,7 @@
 
 #include "eval.h"
 #include "movegen.h"
+#include "tt.h"
 
 namespace {
 
@@ -19,6 +20,7 @@ constexpr int MAX_PLY = 128;
 constexpr int CAPTURE_BASE = 10000;
 constexpr int QUEEN_PROMOTION_BASE = 20000;
 constexpr int PREVIOUS_BEST_BONUS = 1000000;
+constexpr int TT_MOVE_BONUS = 2000000;
 
 using ScoreList = std::array<int, 256>;
 
@@ -73,8 +75,9 @@ private:
 
 class Searcher {
 public:
-    Searcher(Board& board, const SearchLimits& limits, const std::vector<std::uint64_t>& history)
-        : board_(board), limits_(limits), start_(Clock::now()), path_(history) {
+    Searcher(Board& board, const SearchLimits& limits, const std::vector<std::uint64_t>& history,
+             TranspositionTable* tt)
+        : board_(board), limits_(limits), start_(Clock::now()), path_(history), tt_(tt) {
         path_.reserve(history.size() + MAX_PLY + 2);
     }
 
@@ -99,6 +102,7 @@ private:
     SearchLimits limits_;
     Clock::time_point start_;
     std::vector<std::uint64_t> path_;
+    TranspositionTable* tt_;
     std::uint64_t nodes_ = 0;
     bool stopped_ = false;
     bool can_stop_ = false;
@@ -179,12 +183,33 @@ int Searcher::negamax(int depth, int alpha, int beta, int ply) {
     if (list.count == 0) return in_check(board_, board_.side_to_move) ? -MATE_SCORE + ply : 0;
     if (board_.halfmove_clock >= 100) return 0;
 
+    Move tt_move;
+    if (tt_) {
+        TTEntry entry;
+        if (tt_->probe(board_.hash, entry)) {
+            tt_move = entry.move;
+            if (entry.depth >= depth) {
+                int tt_score = score_from_tt(entry.score, ply);
+                if (entry.bound == BOUND_EXACT) return tt_score;
+                if (entry.bound == BOUND_LOWER && tt_score >= beta) return tt_score;
+                if (entry.bound == BOUND_UPPER && tt_score <= alpha) return tt_score;
+            }
+        }
+    }
+
     ScoreList scores;
     score_moves(board_, list, scores);
+    if (tt_move.data != 0) {
+        for (int i = 0; i < list.count; ++i) {
+            if (list.moves[i] == tt_move) scores[i] += TT_MOVE_BONUS;
+        }
+    }
 
     PathGuard guard(path_, board_.hash);
 
+    int original_alpha = alpha;
     int best = -INF_SCORE;
+    Move best_move;
     for (int i = 0; i < list.count; ++i) {
         pick_best(list, scores, i);
         Move m = list.moves[i];
@@ -195,9 +220,21 @@ int Searcher::negamax(int depth, int alpha, int beta, int ply) {
 
         if (score > best) {
             best = score;
+            best_move = m;
             if (score > alpha) alpha = score;
         }
         if (alpha >= beta) break;
+    }
+
+    if (tt_) {
+        Bound bound = BOUND_EXACT;
+        if (best <= original_alpha) {
+            bound = BOUND_UPPER;
+        } else if (best >= beta) {
+            bound = BOUND_LOWER;
+        }
+        tt_->store(board_.hash, bound == BOUND_UPPER ? Move() : best_move,
+                   score_to_tt(best, ply), depth, bound);
     }
     return best;
 }
@@ -254,9 +291,9 @@ SearchResult Searcher::run(std::ostream* info) {
             long long ms = elapsed_ms();
             std::uint64_t nps = nodes_ * 1000 / static_cast<std::uint64_t>(std::max(1LL, ms));
             *info << "info depth " << depth << " score " << score_string(iteration_score)
-                  << " nodes " << nodes_ << " nps " << nps << " time " << ms << " pv "
-                  << iteration_best.to_uci() << "\n"
-                  << std::flush;
+                  << " nodes " << nodes_ << " nps " << nps;
+            if (tt_) *info << " hashfull " << tt_->hashfull();
+            *info << " time " << ms << " pv " << iteration_best.to_uci() << "\n" << std::flush;
         }
 
         if (iteration_score > MATE_THRESHOLD) break;
@@ -270,7 +307,8 @@ SearchResult Searcher::run(std::ostream* info) {
 }  // namespace
 
 SearchResult search(Board& board, const SearchLimits& limits, std::ostream* info,
-                    const std::vector<std::uint64_t>& history) {
-    Searcher searcher(board, limits, history);
+                    const std::vector<std::uint64_t>& history, TranspositionTable* tt) {
+    if (tt) tt->new_search();
+    Searcher searcher(board, limits, history, tt);
     return searcher.run(info);
 }

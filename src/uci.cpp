@@ -10,10 +10,14 @@
 
 #include "movegen.h"
 #include "search.h"
+#include "tt.h"
 
 namespace {
 
 constexpr long long DEFAULT_SEARCH_MS = 5000;
+constexpr std::size_t DEFAULT_HASH_MB = 16;
+constexpr std::size_t MIN_HASH_MB = 1;
+constexpr std::size_t MAX_HASH_MB = 1024;
 
 SearchLimits parse_go(const std::string& args, Color side) {
     std::istringstream in(args);
@@ -66,6 +70,39 @@ SearchLimits parse_go(const std::string& args, Color side) {
     }
 
     return limits;
+}
+
+bool parse_setoption(const std::string& args, std::string& name, std::string& value) {
+    std::istringstream in(args);
+    std::string token;
+    if (!(in >> token) || token != "name") return false;
+
+    name.clear();
+    value.clear();
+    bool reading_value = false;
+    while (in >> token) {
+        if (!reading_value && token == "value") {
+            reading_value = true;
+        } else if (reading_value) {
+            if (!value.empty()) value += ' ';
+            value += token;
+        } else {
+            if (!name.empty()) name += ' ';
+            name += token;
+        }
+    }
+    return !name.empty();
+}
+
+bool parse_hash_size(const std::string& text, std::size_t& megabytes) {
+    if (text.empty() || text.size() > 6) return false;
+    for (char c : text) {
+        if (c < '0' || c > '9') return false;
+    }
+    std::size_t value = static_cast<std::size_t>(std::stoul(text));
+    if (value < MIN_HASH_MB || value > MAX_HASH_MB) return false;
+    megabytes = value;
+    return true;
 }
 
 }  // namespace
@@ -123,6 +160,7 @@ void uci_loop(std::istream& in, std::ostream& out) {
     Board board;
     board.set_fen(START_FEN);
     std::vector<std::uint64_t> history;
+    TranspositionTable tt(DEFAULT_HASH_MB);
 
     std::string line;
     while (std::getline(in, line)) {
@@ -133,6 +171,9 @@ void uci_loop(std::istream& in, std::ostream& out) {
         if (command == "uci") {
             out << "id name Arivu\n"
                 << "id author anaybajpaii\n"
+                << "option name Hash type spin default " << DEFAULT_HASH_MB << " min "
+                << MIN_HASH_MB << " max " << MAX_HASH_MB << "\n"
+                << "option name Clear Hash type button\n"
                 << "uciok\n"
                 << std::flush;
         } else if (command == "isready") {
@@ -140,6 +181,26 @@ void uci_loop(std::istream& in, std::ostream& out) {
         } else if (command == "ucinewgame") {
             board.set_fen(START_FEN);
             history.clear();
+            tt.clear();
+        } else if (command == "setoption") {
+            std::string rest;
+            std::getline(ss, rest);
+            std::string name;
+            std::string value;
+            if (!parse_setoption(rest, name, value)) {
+                out << "info string invalid setoption command\n" << std::flush;
+            } else if (name == "Hash") {
+                std::size_t megabytes = 0;
+                if (parse_hash_size(value, megabytes)) {
+                    tt.resize(megabytes);
+                } else {
+                    out << "info string invalid Hash value\n" << std::flush;
+                }
+            } else if (name == "Clear Hash") {
+                tt.clear();
+            } else {
+                out << "info string unknown option " << name << "\n" << std::flush;
+            }
         } else if (command == "position") {
             std::string rest;
             std::getline(ss, rest);
@@ -149,7 +210,7 @@ void uci_loop(std::istream& in, std::ostream& out) {
         } else if (command == "go") {
             std::string rest;
             std::getline(ss, rest);
-            SearchResult result = search(board, parse_go(rest, board.side_to_move), &out, history);
+            SearchResult result = search(board, parse_go(rest, board.side_to_move), &out, history, &tt);
             out << "bestmove " << (result.found ? result.best.to_uci() : std::string("0000"))
                 << "\n"
                 << std::flush;
