@@ -2,8 +2,6 @@
 
 A running record of what was tried, what failed and what was learned. Newest entries at the bottom of each section. Numbers are from my own test runs on the stated settings, not from a rating list.
 
-**How this was built.** The code was written with Claude (Anthropic), one commit at a time, and I run and read each commit before moving on. Claude's help is credited in the portfolio writeup.
-
 ## Rules for the project
 
 - Own implementation. No code copied from Stockfish or any other engine.
@@ -76,10 +74,3 @@ Lichess rating (fill in after the first rated games): not yet measured.
 - Deterministic play.
 - Repetition is scored as a draw at the first repeat; the transposition table can carry a repetition draw into a score reached by another route.
 - Quiescence search does not use the transposition table or check for repetition.
-
-## Next
-
-1. Upgrade the bot account and play the first casual games (see `docs/LICHESS.md`).
-2. Run the gauntlet against Stockfish at several strengths with at least 60 games per level (see `docs/MEASURING.md`).
-3. Choose and build the distinctive element.
-4. One-page writeup with plots.
